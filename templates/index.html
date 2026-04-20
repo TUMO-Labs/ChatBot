@@ -1,0 +1,83 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Portfolio</title>
+    
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;600&display=swap" rel="stylesheet">
+    
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/chatbot.css') }}">
+</head>
+<body>
+
+    <main class="portfolio-container">
+        <header class="hero">
+            <h1>Test Test</h1>
+            <p class="subtitle">Full Stack Developer | Python & JavaScript Specialist</p>
+            <div class="contact-links">
+                <a href="#">LinkedIn</a> • <a href="#">GitHub</a> • <a href="#">Download CV</a>
+            </div>
+        </header>
+
+        <section class="cv-grid">
+            
+            <div class="cv-main">
+                <div class="cv-section">
+                    <h2>Work Experience</h2>
+                    
+                    {% for job in experiences %}
+                    <div class="cv-item">
+                        <div class="cv-meta">
+                            <h3>{{ job.title }}</h3>
+                            <span>{{ job.year }}</span>
+                        </div>
+                        <p class="company">{{ job.company }}</p>
+                        <ul>
+                            <li>{{ job.desc }}</li>
+                        </ul>
+                    </div>
+                    {% endfor %}
+                </div>
+
+                <div class="cv-section">
+                    <h2>Education</h2>
+                    <div class="cv-item">
+                        <div class="cv-meta">
+                            <h3>B.S. in Computer Science</h3>
+                            <span>2020 - 2024</span>
+                        </div>
+                        <p class="company">Tumo Labs</p>
+                    </div>
+                </div>
+            </div>
+
+            <aside class="cv-sidebar">
+                <div class="cv-section">
+                    <h2>Technical Skills</h2>
+                    <div class="skill-tags">
+                        {% for skill in skills %}
+                        <span>{{ skill }}</span>
+                        {% endfor %}
+                    </div>
+                </div>
+            </aside>
+        </section>
+    </main>
+
+    <button class="chat-toggle" id="chat-toggle">💬</button>
+
+    <div id="chat-widget" class="chat-container">
+        <div class="chat-header">
+            <div class="status-dot" style="width: 10px; height: 10px; background: #4ade80; border-radius: 50%; display: inline-block; margin-right: 5px;"></div>
+            Assistant
+        </div>
+        <div id="chat-window" class="chat-window"></div>
+        <div id="options-container" class="options-container"></div>
+    </div>
+
+    <script src="{{ url_for('static', filename='js/chatbot.js') }}"></script>
+
+</body>
+</html>
