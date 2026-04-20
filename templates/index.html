@@ -73,8 +73,17 @@
             <div class="status-dot" style="width: 10px; height: 10px; background: #4ade80; border-radius: 50%; display: inline-block; margin-right: 5px;"></div>
             Assistant
         </div>
-        <div id="chat-window" class="chat-window"></div>
-        <div id="options-container" class="options-container"></div>
+
+        <!-- Username gate -->
+        <div id="username-gate" class="username-gate">
+            <p class="username-prompt">Before we begin, what's your name?</p>
+            <input id="username-input" type="text" placeholder="Enter your name..." />
+            <textarea id="message-input" placeholder="Write a message (optional)..." rows="3"></textarea>
+            <button id="username-submit">Start Chat</button>
+        </div>
+
+        <div id="chat-window" class="chat-window" style="display:none;"></div>
+        <div id="options-container" class="options-container" style="display:none;"></div>
     </div>
 
     <script src="{{ url_for('static', filename='js/chatbot.js') }}"></script>
