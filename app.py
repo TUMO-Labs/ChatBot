@@ -1,6 +1,9 @@
 from flask import Flask, render_template, jsonify, request
 import smtplib
 import os
+import re
+import time
+from datetime import datetime
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 
@@ -13,50 +16,98 @@ EMAIL_RECIPIENT = os.environ['NOTIFY_EMAIL_RECIPIENT']
 SMTP_HOST       = 'smtp.gmail.com'
 SMTP_PORT       = 587
 
+# --- Rate limiting: ip -> last notify timestamp ---
+_notify_last: dict[str, float] = {}
+NOTIFY_COOLDOWN = 60  # seconds
+
 CONVO_TREE = {
     "start": {
         "bot": "Hi! I'm your virtual assistant. How can I help you today?",
         "options": [
-            {"text": "🚀 View Projects", "next": "projects"},
-            {"text": "📬 Contact Info", "next": "contact"}
+            {"text": "💼 Work Experience", "next": "experience"},
+            {"text": "🎓 Education",        "next": "education"},
+            {"text": "🛠️ Skills",           "next": "skills"},
+            {"text": "🚀 Projects",         "next": "projects"},
+            {"text": "📬 Contact",          "next": "contact"},
+        ]
+    },
+    "experience": {
+        "bot": "I've worked as a Programmer at Tech Company (2022–Present) building Flask dashboards, and as a Junior Frontend Developer at TUMO (2020–2022) crafting responsive UIs.",
+        "options": [
+            {"text": "🎓 Tell me about education", "next": "education"},
+            {"text": "⬅️ Back",                    "next": "start"},
+        ]
+    },
+    "education": {
+        "bot": "I hold a B.S. in Computer Science from Tumo Labs (2020–2024), where I focused on full-stack development and software engineering.",
+        "options": [
+            {"text": "🛠️ What are your skills?", "next": "skills"},
+            {"text": "⬅️ Back",                  "next": "start"},
+        ]
+    },
+    "skills": {
+        "bot": "My core stack: Python, Flask, JavaScript, React, PostgreSQL, Docker, Git. I'm comfortable across the full stack, from REST APIs to responsive UIs.",
+        "options": [
+            {"text": "🚀 See my projects", "next": "projects"},
+            {"text": "⬅️ Back",            "next": "start"},
         ]
     },
     "projects": {
-        "bot": "I specialize in Flask and React. This portfolio is built with Python! Want to see my GitHub?",
+        "bot": "My notable projects include a Flask analytics dashboard, a React task manager, and this very portfolio chatbot. Want to check my GitHub?",
         "options": [
-            {"text": "🔗 Yes, take me there", "next": "github"},
-            {"text": "⬅️ Back", "next": "start"}
+            {"text": "🔗 Open GitHub", "next": "github"},
+            {"text": "⬅️ Back",       "next": "start"},
         ]
     },
     "github": {
-        "bot": "You can find my repositories at github.com/yourusername. Anything else?",
-        "options": [{"text": "Back to Start", "next": "start"}]
+        "bot": "You can find all my repositories at github.com/Kristin0. Feel free to star anything you like! 🌟",
+        "options": [
+            {"text": "📄 Download my CV", "next": "download_cv"},
+            {"text": "🏠 Back to Start",  "next": "start"},
+        ]
     },
+    "download_cv": {
+        "bot": "Click here to download my CV → /static/cv.pdf (opens in a new tab)",
+        "options": [{"text": "🏠 Back to Start", "next": "start"}]
+    },  
     "contact": {
-        "bot": "You can reach my human creator at dev@example.com.",
-        "options": [{"text": "Start Over", "next": "start"}]
-    }
+        "bot": "You can reach me at kris123kris99@gmail.com or connect on LinkedIn. I usually respond within 24 hours.",
+        "options": [{"text": "🏠 Back to Start", "next": "start"}]
+    },
 }
 
 @app.route('/')
 def index():
     experience_data = [
         {
-            "title": "Programmer", 
-            "company": "Tech Company", 
+            "title": "Programmer",
+            "company": "Tech Company",
             "year": "2022 - Present",
             "desc": "Led a team of 5 to develop a Flask-based analytics dashboard."
         },
         {
-            "title": "Junior Frontend Developer", 
-            "company": "TUMO", 
+            "title": "Junior Frontend Developer",
+            "company": "TUMO",
             "year": "2020 - 2022",
             "desc": "Developed 20+ responsive landing pages using modern CSS."
         }
     ]
     skills = ["Python", "Flask", "JavaScript", "React", "PostgreSQL", "Docker", "Git"]
-    
-    return render_template('index.html', experiences=experience_data, skills=skills)
+    projects = [
+        {
+            "title": "Online chat application",
+            "desc": "A web-based chat application built with Flask and SQLite, featuring real-time messaging via WebSockets, user authentication, and message encryption.",
+            "tags": ["Python", "Flask", "SQLite", "WebSockets"],
+            "url": "https://github.com/Kristin0/ChatRaspberry"
+        },
+        {
+            "title": "Interactive CV Chatbot",
+            "desc": "This interactive CV chatbot — built with Flask and vanilla JS — that notifies the owner via email when a visitor opens a chat.",
+            "tags": ["Python", "Flask", "JavaScript", "SMTP"],
+            "url": "https://github.com/Kristin0/interactivecv"
+        },
+    ]
+    return render_template('index.html', experiences=experience_data, skills=skills, projects=projects)
 
 @app.route('/chat', methods=['POST'])
 def chat():
@@ -65,20 +116,35 @@ def chat():
     response = CONVO_TREE.get(next_step, CONVO_TREE['start'])
     return jsonify(response)
 
+def _sanitize(text: str, max_len: int = 200) -> str:
+    """Strip HTML/control characters and truncate."""
+    text = re.sub(r'<[^>]+>', '', text)          # strip HTML tags
+    text = re.sub(r'[\x00-\x1f\x7f]', '', text) # strip control chars
+    return text.strip()[:max_len]
+
 @app.route('/notify', methods=['POST'])
 def notify():
-    data       = request.json
+    ip_address = request.headers.get('X-Forwarded-For', request.remote_addr).split(',')[0].strip()
+
+    # Rate limiting
+    now = time.time()
+    if now - _notify_last.get(ip_address, 0) < NOTIFY_COOLDOWN:
+        return jsonify({'status': 'rate_limited'}), 429
+    _notify_last[ip_address] = now
+
+    data     = request.json
     print(f'[NOTIFY] Received: {data}')
-    username   = data.get('username', 'Anonymous')
-    ip_address = request.headers.get('X-Forwarded-For', request.remote_addr)
-    message    = data.get('message', '')
+    username = _sanitize(data.get('username', 'Anonymous'))
+    message  = _sanitize(data.get('message', ''))
+    visited_at = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
 
     subject = f'New Chat Session from {username}'
     body = (
         f'A new visitor opened the chat.\n\n'
-        f'Username : {username}\n'
-        f'IP Address: {ip_address}\n'
+        f'Username   : {username}\n'
+        f'IP Address : {ip_address}\n'
         f'First Message: {message}\n'
+        f'Time       : {visited_at}\n'
     )
 
     try:

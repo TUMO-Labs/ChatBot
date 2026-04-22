@@ -44,7 +44,14 @@ function startChat() {
 }
 
 async function renderStep(stepKey) {
-    optionsContainer.innerHTML = ''; 
+    optionsContainer.innerHTML = '';
+
+    // Typing indicator
+    const typingDiv = document.createElement('div');
+    typingDiv.className = 'message bot-msg typing-indicator';
+    typingDiv.innerHTML = '<span></span><span></span><span></span>';
+    chatWindow.appendChild(typingDiv);
+    chatWindow.scrollTop = chatWindow.scrollHeight;
 
     const response = await fetch('/chat', {
         method: 'POST',
@@ -53,9 +60,17 @@ async function renderStep(stepKey) {
     });
     const data = await response.json();
 
+    // Small delay so typing indicator is visible
+    await new Promise(r => setTimeout(r, 600));
+    chatWindow.removeChild(typingDiv);
+
     const botDiv = document.createElement('div');
     botDiv.className = 'message bot-msg';
-    botDiv.innerText = data.bot;
+    // Linkify /static/... paths
+    botDiv.innerHTML = data.bot.replace(
+        /(\/static\/\S+)/g,
+        '<a href="$1" target="_blank" style="color:#6366f1;">$1</a>'
+    );
     chatWindow.appendChild(botDiv);
 
     data.options.forEach(opt => {
@@ -77,3 +92,15 @@ async function renderStep(stepKey) {
 
     chatWindow.scrollTop = chatWindow.scrollHeight;
 }
+
+// Scroll fade-in for .fade-in elements
+const observer = new IntersectionObserver((entries) => {
+    entries.forEach(entry => {
+        if (entry.isIntersecting) {
+            entry.target.classList.add('visible');
+            observer.unobserve(entry.target);
+        }
+    });
+}, { threshold: 0.15 });
+
+document.querySelectorAll('.fade-in').forEach(el => observer.observe(el));

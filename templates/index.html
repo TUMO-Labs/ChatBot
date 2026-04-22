@@ -17,7 +17,7 @@
             <h1>Test Test</h1>
             <p class="subtitle">Full Stack Developer | Python & JavaScript Specialist</p>
             <div class="contact-links">
-                <a href="#">LinkedIn</a> • <a href="#">GitHub</a> • <a href="#">Download CV</a>
+                <a href="#">LinkedIn</a> • <a href="https://github.com/Kristin0/" target="_blank">GitHub</a> • <a href="/static/cv.pdf" target="_blank">📄 Download CV</a>
             </div>
         </header>
 
@@ -28,7 +28,7 @@
                     <h2>Work Experience</h2>
                     
                     {% for job in experiences %}
-                    <div class="cv-item">
+                    <div class="cv-item fade-in">
                         <div class="cv-meta">
                             <h3>{{ job.title }}</h3>
                             <span>{{ job.year }}</span>
@@ -43,13 +43,29 @@
 
                 <div class="cv-section">
                     <h2>Education</h2>
-                    <div class="cv-item">
-                        <div class="cv-meta">
-                            <h3>B.S. in Computer Science</h3>
+                    <div class="cv-item fade-in">
                             <span>2020 - 2024</span>
                         </div>
                         <p class="company">Tumo Labs</p>
                     </div>
+                </div>
+
+                <div class="cv-section">
+                    <h2>Projects</h2>
+                    {% for project in projects %}
+                    <div class="cv-item project-card fade-in">
+                        <div class="cv-meta">
+                            <h3>{{ project.title }}</h3>
+                            <a href="{{ project.url }}" target="_blank" class="project-link">GitHub →</a>
+                        </div>
+                        <p class="project-desc">{{ project.desc }}</p>
+                        <div class="project-tags">
+                            {% for tag in project.tags %}
+                            <span>{{ tag }}</span>
+                            {% endfor %}
+                        </div>
+                    </div>
+                    {% endfor %}
                 </div>
             </div>
 
