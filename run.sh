@@ -5,6 +5,7 @@ source venv/bin/activate
 pip3 install -r requirements.txt
 
 # -- Setup Nginx --
+sudo rm -f /etc/nginx/sites-enabled/cv.conf
 sudo cp nginx/cv.conf /etc/nginx/sites-available/cv.conf
 sudo ln -s /etc/nginx/sites-available/cv.conf /etc/nginx/sites-enabled/cv.conf
 sudo nginx -t
