@@ -1,0 +1,15 @@
+[Unit]
+Description=ChatBot Flask App
+After=network.target
+
+[Service]
+User=raspberry
+Group=raspberry
+WorkingDirectory=/home/raspberry/ChatBot
+EnvironmentFile=/home/raspberry/ChatBot/.env
+ExecStart=/home/raspberry/ChatBot/venv/bin/gunicorn/venv/bin/gunicorn --worker-class gthread --workers 1 --threads 4 --bind 127.0.0.1:5003 app:app
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
