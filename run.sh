@@ -4,9 +4,9 @@ python3 -m venv venv/
 source venv/bin/activate
 pip3 install -r requirements.txt
 
-sudo ln -s /etc/nginx/sites-available/chatbot /etc/nginx/sites-enabled/chatbot
-
-# Test and reload
+# -- Setup Nginx --
+sudo cp nginx/cv.conf /etc/nginx/sites-available/cv.conf
+sudo ln -s /etc/nginx/sites-available/cv.conf /etc/nginx/sites-enabled/cv.conf
 sudo nginx -t
 sudo systemctl reload nginx
 
