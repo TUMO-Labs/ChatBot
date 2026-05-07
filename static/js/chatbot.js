@@ -9,6 +9,8 @@ const messageInput     = document.getElementById('message-input');
 
 let currentUsername = null;
 let notificationSent = false;
+let sessionId = crypto.randomUUID();
+let pollingInterval = null;
 
 chatToggle.onclick = () => {
     chatWidget.classList.toggle('active');
@@ -21,11 +23,31 @@ async function sendNotification(message) {
         await fetch('/notify', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ username: currentUsername, message })
+            body: JSON.stringify({ username: currentUsername, message, session_id: sessionId })
         });
+        startPolling();
     } catch (e) {
         console.warn('Notification failed:', e);
     }
+}
+
+function startPolling() {
+    if (pollingInterval) return;
+    pollingInterval = setInterval(async () => {
+        try {
+            const res  = await fetch(`/messages/${sessionId}`);
+            const data = await res.json();
+            data.replies.forEach(reply => appendBotMessage(reply));
+        } catch (e) {}
+    }, 2000);
+}
+
+function appendBotMessage(text) {
+    const div = document.createElement('div');
+    div.className = 'message bot-msg';
+    div.innerText = text;
+    chatWindow.appendChild(div);
+    chatWindow.scrollTop = chatWindow.scrollHeight;
 }
 
 usernameSubmit.onclick = startChat;
@@ -41,6 +63,46 @@ function startChat() {
     optionsContainer.style.display = '';
     sendNotification(firstMessage);
     renderStep('start');
+    addFreeTextInput();
+}
+
+function addFreeTextInput() {
+    const wrapper = document.createElement('div');
+    wrapper.className = 'free-text-wrapper';
+
+    const input = document.createElement('input');
+    input.type = 'text';
+    input.placeholder = 'Type a message...';
+    input.className = 'free-text-input';
+
+    const btn = document.createElement('button');
+    btn.innerText = '➤';
+    btn.className = 'free-text-btn';
+
+    async function sendFreeMessage() {
+        const text = input.value.trim();
+        if (!text) return;
+        input.value = '';
+
+        const userDiv = document.createElement('div');
+        userDiv.className = 'message user-msg';
+        userDiv.innerText = text;
+        chatWindow.appendChild(userDiv);
+        chatWindow.scrollTop = chatWindow.scrollHeight;
+
+        await fetch('/send-message', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ session_id: sessionId, message: text })
+        });
+    }
+
+    btn.onclick = sendFreeMessage;
+    input.addEventListener('keydown', e => { if (e.key === 'Enter') sendFreeMessage(); });
+
+    wrapper.appendChild(input);
+    wrapper.appendChild(btn);
+    chatWidget.appendChild(wrapper);
 }
 
 async function renderStep(stepKey) {

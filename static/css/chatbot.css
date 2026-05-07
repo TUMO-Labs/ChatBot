@@ -166,6 +166,46 @@ body {
 
 .opt-btn:hover { background: #6366f1; color: white; }
 
+/* Free-text input bar */
+.free-text-wrapper {
+    display: flex;
+    gap: 8px;
+    padding: 10px 16px 16px;
+    background: white;
+    border-top: 1px solid #f1f5f9;
+}
+
+.free-text-input {
+    flex: 1;
+    padding: 8px 12px;
+    border: 1.5px solid #c7d2fe;
+    border-radius: 20px;
+    font-size: 0.9rem;
+    outline: none;
+    font-family: inherit;
+    transition: border-color 0.2s;
+}
+
+.free-text-input:focus { border-color: #6366f1; }
+
+.free-text-btn {
+    width: 36px;
+    height: 36px;
+    background: #6366f1;
+    color: white;
+    border: none;
+    border-radius: 50%;
+    cursor: pointer;
+    font-size: 1rem;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    transition: background 0.2s;
+    flex-shrink: 0;
+}
+
+.free-text-btn:hover { background: #4f46e5; }
+
 /* Username gate */
 .username-gate {
     flex: 1;

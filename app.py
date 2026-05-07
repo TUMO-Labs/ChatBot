@@ -1,24 +1,23 @@
 from flask import Flask, render_template, jsonify, request
-import smtplib
 import os
 import re
 import time
+import uuid
+import requests
 from datetime import datetime
-from email.mime.text import MIMEText
-from email.mime.multipart import MIMEMultipart
 
 app = Flask(__name__)
 
-# --- Gmail Configuration (set via environment variables) ---
-EMAIL_SENDER    = os.environ['NOTIFY_EMAIL_SENDER']
-EMAIL_PASSWORD  = os.environ['NOTIFY_EMAIL_PASSWORD']
-EMAIL_RECIPIENT = os.environ['NOTIFY_EMAIL_RECIPIENT']
-SMTP_HOST       = 'smtp.gmail.com'
-SMTP_PORT       = 587
+# --- Telegram Configuration (set via environment variables) ---
+TELEGRAM_BOT_TOKEN = os.environ['TELEGRAM_BOT_TOKEN']
+TELEGRAM_CHAT_ID   = os.environ['TELEGRAM_CHAT_ID']   # your personal chat ID
 
 # --- Rate limiting: ip -> last notify timestamp ---
 _notify_last: dict[str, float] = {}
 NOTIFY_COOLDOWN = 60  # seconds
+
+# --- Session store: session_id -> { username, ip, reply_queue[] } ---
+_sessions: dict[str, dict] = {}
 
 CONVO_TREE = {
     "start": {
@@ -118,9 +117,13 @@ def chat():
 
 def _sanitize(text: str, max_len: int = 200) -> str:
     """Strip HTML/control characters and truncate."""
-    text = re.sub(r'<[^>]+>', '', text)          # strip HTML tags
-    text = re.sub(r'[\x00-\x1f\x7f]', '', text) # strip control chars
+    text = re.sub(r'<[^>]+>', '', text)
+    text = re.sub(r'[\x00-\x1f\x7f]', '', text)
     return text.strip()[:max_len]
+
+def _telegram_send(text: str) -> None:
+    url = f'https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage'
+    requests.post(url, json={'chat_id': TELEGRAM_CHAT_ID, 'text': text}, timeout=5)
 
 @app.route('/notify', methods=['POST'])
 def notify():
@@ -132,37 +135,75 @@ def notify():
         return jsonify({'status': 'rate_limited'}), 429
     _notify_last[ip_address] = now
 
-    data     = request.json
-    print(f'[NOTIFY] Received: {data}')
-    username = _sanitize(data.get('username', 'Anonymous'))
-    message  = _sanitize(data.get('message', ''))
+    data       = request.json
+    username   = _sanitize(data.get('username', 'Anonymous'))
+    message    = _sanitize(data.get('message', ''))
+    session_id = data.get('session_id', '')
     visited_at = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
 
-    subject = f'New Chat Session from {username}'
-    body = (
-        f'A new visitor opened the chat.\n\n'
-        f'Username   : {username}\n'
-        f'IP Address : {ip_address}\n'
-        f'First Message: {message}\n'
-        f'Time       : {visited_at}\n'
+    # Store session
+    _sessions[session_id] = {'username': username, 'ip': ip_address, 'replies': []}
+
+    text = (
+        f'💬 New chat visitor!\n\n'
+        f'👤 Name: {username}\n'
+        f'🌐 IP: {ip_address}\n'
+        f'✉️ Message: {message}\n'
+        f'🕐 Time: {visited_at}\n\n'
+        f'Reply with:\n/reply {session_id} your message here'
     )
 
     try:
-        msg = MIMEMultipart()
-        msg['From']    = EMAIL_SENDER
-        msg['To']      = EMAIL_RECIPIENT
-        msg['Subject'] = subject
-        msg.attach(MIMEText(body, 'plain'))
+        _telegram_send(text)
+        return jsonify({'status': 'ok', 'session_id': session_id})
+    except Exception as e:
+        print(f'[Telegram Error] {e}')
+        return jsonify({'status': 'error', 'detail': str(e)}), 500
 
-        with smtplib.SMTP(SMTP_HOST, SMTP_PORT) as server:
-            server.starttls()
-            server.login(EMAIL_SENDER, EMAIL_PASSWORD)
-            server.sendmail(EMAIL_SENDER, EMAIL_RECIPIENT, msg.as_string())
+@app.route('/send-message', methods=['POST'])
+def send_message():
+    """Visitor sends a free-text message → forwarded to Telegram."""
+    data       = request.json
+    session_id = _sanitize(data.get('session_id', ''), 64)
+    message    = _sanitize(data.get('message', ''))
+    session    = _sessions.get(session_id)
+    if not session or not message:
+        return jsonify({'status': 'ignored'}), 200
 
+    text = f'💬 [{session["username"]}]: {message}\n\nReply: /reply {session_id} your message'
+    try:
+        _telegram_send(text)
         return jsonify({'status': 'ok'})
     except Exception as e:
-        print(f'[Email Error] {e}')
         return jsonify({'status': 'error', 'detail': str(e)}), 500
+
+@app.route('/telegram-webhook', methods=['POST'])
+def telegram_webhook():
+    """Receive messages from Telegram and route to the right visitor session."""
+    data = request.json
+    message = data.get('message', {})
+    text = message.get('text', '')
+
+    # Format: /reply <session_id> <message text>
+    if text.startswith('/reply '):
+        parts = text[7:].split(' ', 1)
+        if len(parts) == 2:
+            session_id, reply = parts
+            session = _sessions.get(session_id)
+            if session:
+                session['replies'].append(reply)
+
+    return jsonify({'ok': True})
+
+@app.route('/messages/<session_id>', methods=['GET'])
+def get_messages(session_id):
+    """Visitor polls this to get replies from the owner."""
+    session = _sessions.get(session_id)
+    if not session:
+        return jsonify({'replies': []})
+    replies = session['replies'].copy()
+    session['replies'].clear()
+    return jsonify({'replies': replies})
 
 
 if __name__ == '__main__':
