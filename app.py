@@ -1,27 +1,114 @@
+from gevent import monkey
+monkey.patch_all()
+
 from flask import Flask, render_template, jsonify, request
+from flask_socketio import SocketIO, join_room
 import os
 import re
 import time
-import uuid
+import threading
 import requests
 from datetime import datetime
 
 app = Flask(__name__)
+app.config['SECRET_KEY'] = os.environ.get('SECRET_KEY', 'chatbot-secret')
+socketio = SocketIO(app, cors_allowed_origins='*', async_mode='gevent')
 
-# --- Telegram Configuration (set via environment variables) ---
+# --- Telegram Configuration ---
 TELEGRAM_BOT_TOKEN = os.environ['TELEGRAM_BOT_TOKEN']
-TELEGRAM_CHAT_ID   = os.environ['TELEGRAM_CHAT_ID']   # your personal chat ID
+TELEGRAM_CHAT_ID   = os.environ['TELEGRAM_CHAT_ID']
 
-# --- Rate limiting: ip -> last notify timestamp ---
+# --- Rate limiting ---
 _notify_last: dict[str, float] = {}
-NOTIFY_COOLDOWN = 60  # seconds
+NOTIFY_COOLDOWN = 60
 
-# --- Session store: session_id -> { username, ip, reply_queue[] } ---
+# --- Session store: session_id -> { username, ip } ---
 _sessions: dict[str, dict] = {}
+_last_session_id: str | None = None  # most recently active session
+
+def _telegram_poll():
+    """Background thread: polls Telegram. Supports both:
+    - Replying to the notification message (automatic session detection)
+    - /reply <session_id> <message> (manual)
+    """
+    offset = None
+    while True:
+        try:
+            params = {'timeout': 30}
+            if offset:
+                params['offset'] = offset
+            resp = requests.get(
+                f'https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/getUpdates',
+                params=params, timeout=35
+            )
+            for update in resp.json().get('result', []):
+                offset = update['update_id'] + 1
+
+                # Handle inline button tap → switch active room
+                if 'callback_query' in update:
+                    cq   = update['callback_query']
+                    data = cq.get('data', '')
+                    if data.startswith('room:'):
+                        global _last_session_id
+                        new_sid = data[5:]
+                        if new_sid in _sessions:
+                            _last_session_id = new_sid
+                            name = _sessions[new_sid]['username']
+                            # Answer the callback to remove loading spinner
+                            requests.post(
+                                f'https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/answerCallbackQuery',
+                                json={'callback_query_id': cq['id'], 'text': f'Now replying to {name}'}, timeout=5
+                            )
+                    continue
+
+                msg  = update.get('message', {})
+                text = msg.get('text', '')
+                print(f'[TG UPDATE] text={text!r} reply_to={msg.get("reply_to_message", {}).get("text", "")[:80]!r}')
+
+                session_id = None
+                reply      = None
+
+                # Method 1: Reply to the notification message → extract session_id from it
+                reply_to = msg.get('reply_to_message', {})
+                if reply_to:
+                    original_text = reply_to.get('text', '')
+                    for line in original_text.splitlines():
+                        if line.startswith('/reply '):
+                            parts = line[7:].split(' ', 1)
+                            if parts:
+                                session_id = parts[0]
+                                reply = text
+                                break
+
+                # Method 2: Manual /reply <session_id> <message>
+                if not session_id and text.startswith('/reply '):
+                    parts = text[7:].split(' ', 1)
+                    if len(parts) == 2:
+                        session_id, reply = parts
+
+                # Method 3: Any message → route to most recent active session
+                if not session_id and text and not text.startswith('/') and _last_session_id in _sessions:
+                    session_id = _last_session_id
+                    reply = text
+
+                if session_id and reply and session_id in _sessions:
+                    print(f'[TG REPLY] → session={session_id} msg={reply!r}')
+                    socketio.emit('bot_reply', {'message': reply}, room=session_id)
+
+        except Exception as e:
+            print(f'[Telegram Poll Error] {e}')
+            time.sleep(5)
+
+_poll_thread = threading.Thread(target=_telegram_poll, daemon=True)
+_poll_thread.start()
+
+@socketio.on('join')
+def on_join(data):
+    join_room(data['session_id'])
 
 CONVO_TREE = {
     "start": {
-        "bot": "Hi! I'm your virtual assistant. How can I help you today?",
+        "bot": "",
         "options": [
             {"text": "💼 Work Experience", "next": "experience"},
             {"text": "🎓 Education",        "next": "education"},
@@ -121,17 +208,24 @@ def _sanitize(text: str, max_len: int = 200) -> str:
     text = re.sub(r'[\x00-\x1f\x7f]', '', text)
     return text.strip()[:max_len]
 
-def _telegram_send(text: str) -> None:
+def _telegram_send(text: str, session_id: str = None) -> None:
     url = f'https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage'
-    requests.post(url, json={'chat_id': TELEGRAM_CHAT_ID, 'text': text}, timeout=5)
+    payload = {'chat_id': TELEGRAM_CHAT_ID, 'text': text}
+    if session_id:
+        payload['reply_markup'] = {
+            'inline_keyboard': [[
+                {'text': '💬 Reply to this visitor', 'callback_data': f'room:{session_id}'}
+            ]]
+        }
+    requests.post(url, json=payload, timeout=5)
 
 @app.route('/notify', methods=['POST'])
 def notify():
     ip_address = request.headers.get('X-Forwarded-For', request.remote_addr).split(',')[0].strip()
 
-    # Rate limiting
+    # Rate limiting (skip for localhost)
     now = time.time()
-    if now - _notify_last.get(ip_address, 0) < NOTIFY_COOLDOWN:
+    if ip_address != '127.0.0.1' and now - _notify_last.get(ip_address, 0) < NOTIFY_COOLDOWN:
         return jsonify({'status': 'rate_limited'}), 429
     _notify_last[ip_address] = now
 
@@ -142,7 +236,9 @@ def notify():
     visited_at = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
 
     # Store session
-    _sessions[session_id] = {'username': username, 'ip': ip_address, 'replies': []}
+    global _last_session_id
+    _last_session_id = session_id
+    _sessions[session_id] = {'username': username, 'ip': ip_address}
 
     text = (
         f'💬 New chat visitor!\n\n'
@@ -154,7 +250,7 @@ def notify():
     )
 
     try:
-        _telegram_send(text)
+        _telegram_send(text, session_id=session_id)
         return jsonify({'status': 'ok', 'session_id': session_id})
     except Exception as e:
         print(f'[Telegram Error] {e}')
@@ -172,39 +268,11 @@ def send_message():
 
     text = f'💬 [{session["username"]}]: {message}\n\nReply: /reply {session_id} your message'
     try:
-        _telegram_send(text)
+        _telegram_send(text, session_id=session_id)
         return jsonify({'status': 'ok'})
     except Exception as e:
         return jsonify({'status': 'error', 'detail': str(e)}), 500
 
-@app.route('/telegram-webhook', methods=['POST'])
-def telegram_webhook():
-    """Receive messages from Telegram and route to the right visitor session."""
-    data = request.json
-    message = data.get('message', {})
-    text = message.get('text', '')
-
-    # Format: /reply <session_id> <message text>
-    if text.startswith('/reply '):
-        parts = text[7:].split(' ', 1)
-        if len(parts) == 2:
-            session_id, reply = parts
-            session = _sessions.get(session_id)
-            if session:
-                session['replies'].append(reply)
-
-    return jsonify({'ok': True})
-
-@app.route('/messages/<session_id>', methods=['GET'])
-def get_messages(session_id):
-    """Visitor polls this to get replies from the owner."""
-    session = _sessions.get(session_id)
-    if not session:
-        return jsonify({'replies': []})
-    replies = session['replies'].copy()
-    session['replies'].clear()
-    return jsonify({'replies': replies})
-
 
 if __name__ == '__main__':
-    app.run(debug=True)
+    socketio.run(app, host='127.0.0.1', port=5003, debug=False)

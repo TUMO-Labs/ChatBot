@@ -10,7 +10,11 @@ const messageInput     = document.getElementById('message-input');
 let currentUsername = null;
 let notificationSent = false;
 let sessionId = crypto.randomUUID();
-let pollingInterval = null;
+const socket = io();
+
+// When owner replies via Telegram → show in chat instantly
+socket.on('bot_reply', data => appendBotMessage(data.message));
+
 
 chatToggle.onclick = () => {
     chatWidget.classList.toggle('active');
@@ -25,21 +29,9 @@ async function sendNotification(message) {
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ username: currentUsername, message, session_id: sessionId })
         });
-        startPolling();
     } catch (e) {
         console.warn('Notification failed:', e);
     }
-}
-
-function startPolling() {
-    if (pollingInterval) return;
-    pollingInterval = setInterval(async () => {
-        try {
-            const res  = await fetch(`/messages/${sessionId}`);
-            const data = await res.json();
-            data.replies.forEach(reply => appendBotMessage(reply));
-        } catch (e) {}
-    }, 2000);
 }
 
 function appendBotMessage(text) {
@@ -62,6 +54,8 @@ function startChat() {
     chatWindow.style.display = '';
     optionsContainer.style.display = '';
     sendNotification(firstMessage);
+    socket.emit('join', { session_id: sessionId });
+    appendBotMessage(`Hi ${currentUsername}! Your message has been sent. I'll get back to you shortly! 💬`);
     renderStep('start');
     addFreeTextInput();
 }
@@ -126,14 +120,16 @@ async function renderStep(stepKey) {
     await new Promise(r => setTimeout(r, 600));
     chatWindow.removeChild(typingDiv);
 
-    const botDiv = document.createElement('div');
-    botDiv.className = 'message bot-msg';
-    // Linkify /static/... paths
-    botDiv.innerHTML = data.bot.replace(
-        /(\/static\/\S+)/g,
-        '<a href="$1" target="_blank" style="color:#6366f1;">$1</a>'
-    );
-    chatWindow.appendChild(botDiv);
+    if (data.bot) {
+        const botDiv = document.createElement('div');
+        botDiv.className = 'message bot-msg';
+        // Linkify /static/... paths
+        botDiv.innerHTML = data.bot.replace(
+            /\/static\/\S+/g,
+            '<a href="$&" target="_blank" style="color:#6366f1;">$&</a>'
+        );
+        chatWindow.appendChild(botDiv);
+    }
 
     data.options.forEach(opt => {
         const btn = document.createElement('button');
