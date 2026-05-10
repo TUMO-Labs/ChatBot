@@ -9,7 +9,14 @@ const messageInput     = document.getElementById('message-input');
 
 let currentUsername = null;
 let notificationSent = false;
-let sessionId = crypto.randomUUID();
+function generateUUID() {
+    if (typeof crypto !== 'undefined' && crypto.randomUUID) return crypto.randomUUID();
+    return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, c => {
+        const r = Math.random() * 16 | 0;
+        return (c === 'x' ? r : (r & 0x3 | 0x8)).toString(16);
+    });
+}
+let sessionId = generateUUID();
 const socket = io();
 
 // When owner replies via Telegram → show in chat instantly
