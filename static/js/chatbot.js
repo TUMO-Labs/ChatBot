@@ -31,11 +31,14 @@ async function sendNotification(message) {
     if (notificationSent) return;
     notificationSent = true;
     try {
-        await fetch('/notify', {
+        const res = await fetch('/notify', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ username: currentUsername, message, session_id: sessionId })
         });
+        if (res.status === 429) {
+            console.warn('Notification rate limited — chat still active');
+        }
     } catch (e) {
         console.warn('Notification failed:', e);
     }

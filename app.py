@@ -20,7 +20,7 @@ TELEGRAM_CHAT_ID   = os.environ['TELEGRAM_CHAT_ID']
 
 # --- Rate limiting ---
 _notify_last: dict[str, float] = {}
-NOTIFY_COOLDOWN = 60
+NOTIFY_COOLDOWN = 10
 
 # --- Session store: session_id -> { username, ip } ---
 _sessions: dict[str, dict] = {}
