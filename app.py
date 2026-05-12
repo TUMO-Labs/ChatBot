@@ -6,7 +6,6 @@ from flask_socketio import SocketIO, join_room
 import os
 import re
 import time
-import threading
 import requests
 from datetime import datetime
 
@@ -98,9 +97,6 @@ def _telegram_poll():
         except Exception as e:
             print(f'[Telegram Poll Error] {e}')
             time.sleep(5)
-
-_poll_thread = threading.Thread(target=_telegram_poll, daemon=True)
-_poll_thread.start()
 
 @socketio.on('join')
 def on_join(data):
@@ -275,4 +271,6 @@ def send_message():
 
 
 if __name__ == '__main__':
+    # Only start poll here when running directly (not via gunicorn+wsgi.py)
+    socketio.start_background_task(_telegram_poll)
     socketio.run(app, host='127.0.0.1', port=5003, debug=False)
