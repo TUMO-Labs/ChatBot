@@ -11,7 +11,7 @@ from datetime import datetime
 
 app = Flask(__name__)
 app.config['SECRET_KEY'] = os.environ.get('SECRET_KEY', 'chatbot-secret')
-socketio = SocketIO(app, cors_allowed_origins='*', async_mode='gevent', transports=['polling'])
+socketio = SocketIO(app, cors_allowed_origins='*', async_mode='gevent', transports=['polling'], manage_session=False)
 
 # --- Telegram Configuration ---
 TELEGRAM_BOT_TOKEN = os.environ['TELEGRAM_BOT_TOKEN']
