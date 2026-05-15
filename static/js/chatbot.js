@@ -22,6 +22,11 @@ const socket = io();
 // When owner replies via Telegram → show in chat instantly
 socket.on('bot_reply', data => appendBotMessage(data.message));
 
+// Rejoin room automatically on reconnect so replies keep working
+socket.on('connect', () => {
+    if (sessionId) socket.emit('join', { session_id: sessionId });
+});
+
 
 chatToggle.onclick = () => {
     chatWidget.classList.toggle('active');

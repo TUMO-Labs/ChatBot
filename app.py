@@ -16,12 +16,31 @@ socketio = SocketIO(app, cors_allowed_origins='*', async_mode='gevent', transpor
 # --- Telegram Configuration ---
 TELEGRAM_BOT_TOKEN = os.environ['TELEGRAM_BOT_TOKEN']
 TELEGRAM_CHAT_ID   = os.environ['TELEGRAM_CHAT_ID']
+# Set USE_TOPICS=true in .env if your Telegram chat is a supergroup with Topics enabled
+USE_TOPICS = os.environ.get('USE_TOPICS', '').lower() == 'true'
+
+def _create_forum_topic(name: str) -> int | None:
+    """Create a forum topic for a visitor. Returns message_thread_id or None."""
+    if not USE_TOPICS:
+        return None
+    try:
+        r = requests.post(
+            f'https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/createForumTopic',
+            json={'chat_id': TELEGRAM_CHAT_ID, 'name': name[:128]}, timeout=5
+        )
+        result = r.json()
+        if result.get('ok'):
+            return result['result']['message_thread_id']
+        print(f'[TOPIC] createForumTopic failed: {result}')
+    except Exception as e:
+        print(f'[TOPIC] error: {e}')
+    return None
 
 # --- Rate limiting ---
 _notify_last: dict[str, float] = {}
 NOTIFY_COOLDOWN = 10
 
-# --- Session store: session_id -> { username, ip } ---
+# --- Session store: session_id -> { username, ip, thread_id } ---
 _sessions: dict[str, dict] = {}
 _last_session_id: str | None = None  # most recently active session
 
@@ -62,10 +81,19 @@ def _telegram_poll():
 
                 msg  = update.get('message', {})
                 text = msg.get('text', '')
-                print(f'[TG UPDATE] text={text!r} reply_to={msg.get("reply_to_message", {}).get("text", "")[:80]!r}')
+                thread_id = msg.get('message_thread_id')
+                print(f'[TG UPDATE] text={text!r} thread_id={thread_id}')
 
                 session_id = None
                 reply      = None
+
+                # Method 0: Message in a forum topic → find session by thread_id
+                if thread_id and not session_id:
+                    for sid, sess in _sessions.items():
+                        if sess.get('thread_id') == thread_id:
+                            session_id = sid
+                            reply = text
+                            break
 
                 # Method 1: Reply to the notification message → extract session_id from it
                 reply_to = msg.get('reply_to_message', {})
@@ -198,22 +226,38 @@ def chat():
     response = CONVO_TREE.get(next_step, CONVO_TREE['start'])
     return jsonify(response)
 
+def _get_country(ip: str) -> str:
+    """Lookup country from IP using free ip-api.com (no key needed)."""
+    if ip in ('127.0.0.1', 'localhost'):
+        return '🏠 localhost'
+    try:
+        r = requests.get(f'http://ip-api.com/json/{ip}?fields=country,countryCode', timeout=3)
+        data = r.json()
+        if data.get('country'):
+            return f'{data["country"]} ({data["countryCode"]})'
+    except Exception:
+        pass
+    return 'Unknown'
+
 def _sanitize(text: str, max_len: int = 200) -> str:
     """Strip HTML/control characters and truncate."""
     text = re.sub(r'<[^>]+>', '', text)
     text = re.sub(r'[\x00-\x1f\x7f]', '', text)
     return text.strip()[:max_len]
 
-def _telegram_send(text: str, session_id: str = None) -> None:
+def _telegram_send(text: str, session_id: str = None, thread_id: int = None) -> None:
     url = f'https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage'
     payload = {'chat_id': TELEGRAM_CHAT_ID, 'text': text}
-    if session_id:
+    if thread_id:
+        payload['message_thread_id'] = thread_id
+    if session_id and not USE_TOPICS:
         payload['reply_markup'] = {
             'inline_keyboard': [[
                 {'text': '💬 Reply to this visitor', 'callback_data': f'room:{session_id}'}
             ]]
         }
-    requests.post(url, json=payload, timeout=5)
+    r = requests.post(url, json=payload, timeout=5)
+    print(f'[TG SEND] status={r.status_code} body={r.text[:200]}')
 
 @app.route('/notify', methods=['POST'])
 def notify():
@@ -234,19 +278,24 @@ def notify():
     # Store session
     global _last_session_id
     _last_session_id = session_id
-    _sessions[session_id] = {'username': username, 'ip': ip_address}
+
+    # Create a forum topic for this visitor (if topics enabled)
+    thread_id = _create_forum_topic(f'Visitor {username}')
+    country = _get_country(ip_address)
+    _sessions[session_id] = {'username': username, 'ip': ip_address, 'thread_id': thread_id}
 
     text = (
         f'💬 New chat visitor!\n\n'
         f'👤 Name: {username}\n'
         f'🌐 IP: {ip_address}\n'
+        f'🗺️ Country: {country}\n'
         f'✉️ Message: {message}\n'
         f'🕐 Time: {visited_at}\n\n'
-        f'Reply with:\n/reply {session_id} your message here'
+        f'Just reply in this topic to respond.'
     )
 
     try:
-        _telegram_send(text, session_id=session_id)
+        _telegram_send(text, session_id=session_id, thread_id=thread_id)
         return jsonify({'status': 'ok', 'session_id': session_id})
     except Exception as e:
         print(f'[Telegram Error] {e}')
@@ -262,9 +311,9 @@ def send_message():
     if not session or not message:
         return jsonify({'status': 'ignored'}), 200
 
-    text = f'💬 [{session["username"]}]: {message}\n\nReply: /reply {session_id} your message'
+    text = f'💬 [{session["username"]}]: {message}\n'
     try:
-        _telegram_send(text, session_id=session_id)
+        _telegram_send(text, session_id=session_id, thread_id=session.get('thread_id'))
         return jsonify({'status': 'ok'})
     except Exception as e:
         return jsonify({'status': 'error', 'detail': str(e)}), 500
