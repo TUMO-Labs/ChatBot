@@ -17,7 +17,7 @@ function generateUUID() {
     });
 }
 let sessionId = generateUUID();
-const socket = io();
+const socket = io({ transports: ['polling'] });
 
 // When owner replies via Telegram → show in chat instantly
 socket.on('bot_reply', data => appendBotMessage(data.message));
