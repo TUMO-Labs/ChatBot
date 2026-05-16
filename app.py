@@ -42,7 +42,6 @@ NOTIFY_COOLDOWN = 10
 
 # --- Session store: session_id -> { username, ip, thread_id } ---
 _sessions: dict[str, dict] = {}
-_last_session_id: str | None = None  # most recently active session
 
 def _telegram_poll():
     """Background thread: polls Telegram. Supports both:
@@ -62,23 +61,6 @@ def _telegram_poll():
             for update in resp.json().get('result', []):
                 offset = update['update_id'] + 1
 
-                # Handle inline button tap → switch active room
-                if 'callback_query' in update:
-                    cq   = update['callback_query']
-                    data = cq.get('data', '')
-                    if data.startswith('room:'):
-                        global _last_session_id
-                        new_sid = data[5:]
-                        if new_sid in _sessions:
-                            _last_session_id = new_sid
-                            name = _sessions[new_sid]['username']
-                            # Answer the callback to remove loading spinner
-                            requests.post(
-                                f'https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/answerCallbackQuery',
-                                json={'callback_query_id': cq['id'], 'text': f'Now replying to {name}'}, timeout=5
-                            )
-                    continue
-
                 msg  = update.get('message', {})
                 text = msg.get('text', '')
                 thread_id = msg.get('message_thread_id')
@@ -87,36 +69,13 @@ def _telegram_poll():
                 session_id = None
                 reply      = None
 
-                # Method 0: Message in a forum topic → find session by thread_id
-                if thread_id and not session_id:
+                # Route by forum topic thread_id only
+                if thread_id:
                     for sid, sess in _sessions.items():
                         if sess.get('thread_id') == thread_id:
                             session_id = sid
                             reply = text
                             break
-
-                # Method 1: Reply to the notification message → extract session_id from it
-                reply_to = msg.get('reply_to_message', {})
-                if reply_to:
-                    original_text = reply_to.get('text', '')
-                    for line in original_text.splitlines():
-                        if line.startswith('/reply '):
-                            parts = line[7:].split(' ', 1)
-                            if parts:
-                                session_id = parts[0]
-                                reply = text
-                                break
-
-                # Method 2: Manual /reply <session_id> <message>
-                if not session_id and text.startswith('/reply '):
-                    parts = text[7:].split(' ', 1)
-                    if len(parts) == 2:
-                        session_id, reply = parts
-
-                # Method 3: Any message → route to most recent active session
-                if not session_id and text and not text.startswith('/') and _last_session_id in _sessions:
-                    session_id = _last_session_id
-                    reply = text
 
                 if session_id and reply and session_id in _sessions:
                     print(f'[TG REPLY] → session={session_id} msg={reply!r}')
@@ -245,17 +204,11 @@ def _sanitize(text: str, max_len: int = 200) -> str:
     text = re.sub(r'[\x00-\x1f\x7f]', '', text)
     return text.strip()[:max_len]
 
-def _telegram_send(text: str, session_id: str = None, thread_id: int = None) -> None:
+def _telegram_send(text: str, thread_id: int = None) -> None:
     url = f'https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage'
     payload = {'chat_id': TELEGRAM_CHAT_ID, 'text': text}
     if thread_id:
         payload['message_thread_id'] = thread_id
-    if session_id and not USE_TOPICS:
-        payload['reply_markup'] = {
-            'inline_keyboard': [[
-                {'text': '💬 Reply to this visitor', 'callback_data': f'room:{session_id}'}
-            ]]
-        }
     r = requests.post(url, json=payload, timeout=5)
     print(f'[TG SEND] status={r.status_code} body={r.text[:200]}')
 
@@ -275,10 +228,6 @@ def notify():
     session_id = data.get('session_id', '')
     visited_at = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
 
-    # Store session
-    global _last_session_id
-    _last_session_id = session_id
-
     # Create a forum topic for this visitor (if topics enabled)
     thread_id = _create_forum_topic(f'Visitor {username}')
     country = _get_country(ip_address)
@@ -295,7 +244,7 @@ def notify():
     )
 
     try:
-        _telegram_send(text, session_id=session_id, thread_id=thread_id)
+        _telegram_send(text, thread_id=thread_id)
         return jsonify({'status': 'ok', 'session_id': session_id})
     except Exception as e:
         print(f'[Telegram Error] {e}')
@@ -313,7 +262,7 @@ def send_message():
 
     text = f'💬 [{session["username"]}]: {message}\n'
     try:
-        _telegram_send(text, session_id=session_id, thread_id=session.get('thread_id'))
+        _telegram_send(text, thread_id=session.get('thread_id'))
         return jsonify({'status': 'ok'})
     except Exception as e:
         return jsonify({'status': 'error', 'detail': str(e)}), 500
