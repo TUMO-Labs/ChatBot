@@ -102,16 +102,29 @@ class AppWithStartup:
         self._started = False
 
     async def __call__(self, scope, receive, send):
-        if not self._started and scope['type'] in ('http', 'websocket'):
+        if scope['type'] == 'lifespan':
+            await self._handle_lifespan(scope, receive, send)
+            return
+        if not self._started:
             self._started = True
-            asyncio.create_task(_telegram_poll())
+            loop = asyncio.get_event_loop()
+            loop.create_task(_telegram_poll())
             print('[APP] Telegram poll task created')
         await self.inner(scope, receive, send)
 
-app = AppWithStartup()
+    async def _handle_lifespan(self, scope, receive, send):
+        while True:
+            event = await receive()
+            if event['type'] == 'lifespan.startup':
+                loop = asyncio.get_event_loop()
+                loop.create_task(_telegram_poll())
+                print('[APP] Telegram poll task created via lifespan')
+                await send({'type': 'lifespan.startup.complete'})
+            elif event['type'] == 'lifespan.shutdown':
+                await send({'type': 'lifespan.shutdown.complete'})
+                return
 
-# Wrap Flask (WSGI) as ASGI so uvicorn can call HTTP routes
-_flask_asgi = WSGIMiddleware(flask_app)
+app = AppWithStartup()
 
 
 CONVO_TREE = {
