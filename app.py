@@ -86,10 +86,14 @@ async def join(sid, data):
     session_id = data.get('session_id', '')
     await sio.enter_room(sid, session_id)
     _socket_sids[session_id] = sid
-    print(f'[JOIN] session={session_id}')
 
-    for msg in _pending.pop(session_id, []):
-        await sio.emit('bot_reply', {'message': msg}, to=sid)
+    known = session_id in _sessions
+    await sio.emit('session_status', {'known': known}, to=sid)
+    print(f'[JOIN] session={session_id} known={known}')
+
+    if known:
+        for msg in _pending.pop(session_id, []):
+            await sio.emit('bot_reply', {'message': msg}, to=sid)
 
 
 @sio.event

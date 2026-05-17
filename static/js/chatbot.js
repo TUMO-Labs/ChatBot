@@ -7,7 +7,7 @@ const usernameInput    = document.getElementById('username-input');
 const usernameSubmit   = document.getElementById('username-submit');
 const messageInput     = document.getElementById('message-input');
 
-let currentUsername = null;
+let currentUsername = sessionStorage.getItem('username') || null;
 let notificationSent = sessionStorage.getItem('notification_sent') === 'true';
 function generateUUID() {
     if (typeof crypto !== 'undefined' && crypto.randomUUID) return crypto.randomUUID();
@@ -20,6 +20,31 @@ let sessionId = sessionStorage.getItem('session_id') || generateUUID();
 sessionStorage.setItem('session_id', sessionId);
 const socket = io({ transports: ['polling', 'websocket'], upgrade: true });
 
+function _saveMessage(type, text) {
+    const msgs = JSON.parse(sessionStorage.getItem('chat_messages') || '[]');
+    msgs.push({ type, text });
+    sessionStorage.setItem('chat_messages', JSON.stringify(msgs));
+}
+
+function _restoreChat() {
+    usernameGate.style.display = 'none';
+    chatWindow.style.display = '';
+    optionsContainer.style.display = '';
+    const msgs = JSON.parse(sessionStorage.getItem('chat_messages') || '[]');
+    msgs.forEach(m => {
+        const div = document.createElement('div');
+        div.className = `message ${m.type === 'bot' ? 'bot-msg' : 'user-msg'}`;
+        div.innerText = m.text;
+        chatWindow.appendChild(div);
+    });
+    chatWindow.scrollTop = chatWindow.scrollHeight;
+    addFreeTextInput();
+}
+
+if (notificationSent && currentUsername) {
+    _restoreChat();
+}
+
 // When owner replies via Telegram → show in chat instantly
 socket.on('bot_reply', data => {
     console.log(`[bot_reply] seq=${data.seq} msg=${data.message}`);
@@ -29,6 +54,15 @@ socket.on('bot_reply', data => {
 // Rejoin room automatically on reconnect so replies keep working
 socket.on('connect', () => {
     if (sessionId) socket.emit('join', { session_id: sessionId });
+});
+
+// Server tells us if it recognises this session (e.g. after server restart)
+socket.on('session_status', ({ known }) => {
+    if (!known && notificationSent) {
+        // Server lost state — clear everything and ask for name again
+        sessionStorage.clear();
+        location.reload();
+    }
 });
 
 
@@ -60,6 +94,7 @@ function appendBotMessage(text) {
     div.innerText = text;
     chatWindow.appendChild(div);
     chatWindow.scrollTop = chatWindow.scrollHeight;
+    _saveMessage('bot', text);
 }
 
 usernameSubmit.onclick = startChat;
@@ -69,6 +104,7 @@ function startChat() {
     const name = usernameInput.value.trim();
     if (!name) { usernameInput.focus(); return; }
     currentUsername = name;
+    sessionStorage.setItem('username', currentUsername);
     const firstMessage = messageInput.value.trim() || 'Opened chat';
     usernameGate.style.display = 'none';
     chatWindow.style.display = '';
@@ -103,6 +139,7 @@ function addFreeTextInput() {
         userDiv.innerText = text;
         chatWindow.appendChild(userDiv);
         chatWindow.scrollTop = chatWindow.scrollHeight;
+        _saveMessage('user', text);
 
         await fetch('/send-message', {
             method: 'POST',
@@ -149,6 +186,7 @@ async function renderStep(stepKey) {
             '<a href="$&" target="_blank" style="color:#6366f1;">$&</a>'
         );
         chatWindow.appendChild(botDiv);
+        _saveMessage('bot', data.bot);
     }
 
     data.options.forEach(opt => {
@@ -162,6 +200,7 @@ async function renderStep(stepKey) {
             userDiv.className = 'message user-msg';
             userDiv.innerText = opt.text;
             chatWindow.appendChild(userDiv);
+            _saveMessage('user', opt.text);
 
             setTimeout(() => renderStep(opt.next), 400);
         };
