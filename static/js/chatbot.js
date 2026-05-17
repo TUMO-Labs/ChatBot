@@ -17,10 +17,13 @@ function generateUUID() {
     });
 }
 let sessionId = generateUUID();
-const socket = io({ transports: ['polling'] });
+const socket = io({ transports: ['polling', 'websocket'], upgrade: true });
 
 // When owner replies via Telegram → show in chat instantly
-socket.on('bot_reply', data => appendBotMessage(data.message));
+socket.on('bot_reply', data => {
+    console.log('[bot_reply]', data.seq, data.message);
+    appendBotMessage(data.message);
+});
 
 // Rejoin room automatically on reconnect so replies keep working
 socket.on('connect', () => {

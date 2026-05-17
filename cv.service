@@ -7,7 +7,7 @@ User=ubuntu
 Group=ubuntu
 WorkingDirectory=/home/ubuntu/ChatBot
 EnvironmentFile=/home/ubuntu/ChatBot/.env
-ExecStart=/home/ubuntu/ChatBot/venv/bin/gunicorn --worker-class geventwebsocket.gunicorn.workers.GeventWebSocketWorker --workers 1 --bind 127.0.0.1:5003 --timeout 120 wsgi:app
+ExecStart=/home/ubuntu/ChatBot/venv/bin/uvicorn asgi:app --host 127.0.0.1 --port 5003 --workers 1
 Restart=always
 RestartSec=5
 
