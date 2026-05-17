@@ -8,7 +8,7 @@ const usernameSubmit   = document.getElementById('username-submit');
 const messageInput     = document.getElementById('message-input');
 
 let currentUsername = null;
-let notificationSent = false;
+let notificationSent = sessionStorage.getItem('notification_sent') === 'true';
 function generateUUID() {
     if (typeof crypto !== 'undefined' && crypto.randomUUID) return crypto.randomUUID();
     return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, c => {
@@ -39,6 +39,7 @@ chatToggle.onclick = () => {
 async function sendNotification(message) {
     if (notificationSent) return;
     notificationSent = true;
+    sessionStorage.setItem('notification_sent', 'true');
     try {
         const res = await fetch('/notify', {
             method: 'POST',
