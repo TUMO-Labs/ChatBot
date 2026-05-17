@@ -16,7 +16,8 @@ function generateUUID() {
         return (c === 'x' ? r : (r & 0x3 | 0x8)).toString(16);
     });
 }
-let sessionId = generateUUID();
+let sessionId = sessionStorage.getItem('session_id') || generateUUID();
+sessionStorage.setItem('session_id', sessionId);
 const socket = io({ transports: ['polling', 'websocket'], upgrade: true });
 
 // When owner replies via Telegram → show in chat instantly
