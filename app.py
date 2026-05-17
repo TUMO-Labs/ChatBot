@@ -3,6 +3,7 @@ import os
 import re
 import time
 import httpx
+import requests
 import socketio
 from a2wsgi import WSGIMiddleware
 from flask import Flask, render_template, jsonify, request
@@ -15,67 +16,81 @@ flask_app.config['SECRET_KEY'] = os.environ.get('SECRET_KEY', 'chatbot-secret')
 # --- Socket.IO async server (ASGI) ---
 sio = socketio.AsyncServer(async_mode='asgi', cors_allowed_origins='*')
 
-# --- Telegram Configuration ---
+# --- Telegram config ---
 TELEGRAM_BOT_TOKEN = os.environ['TELEGRAM_BOT_TOKEN']
 TELEGRAM_CHAT_ID   = os.environ['TELEGRAM_CHAT_ID']
-USE_TOPICS = os.environ.get('USE_TOPICS', '').lower() == 'true'
+USE_TOPICS         = os.environ.get('USE_TOPICS', '').lower() == 'true'
 
-# --- Session store: session_id -> { username, ip, thread_id } ---
+# session_id -> { username, ip, thread_id }
 _sessions: dict[str, dict] = {}
-
-# --- Maps session_id -> socket sid for direct delivery ---
+# thread_id -> session_id
+_thread_to_session: dict[int, str] = {}
+# session_id -> socket sid (None if offline)
 _socket_sids: dict[str, str] = {}
+# messages queued while client was offline
+_pending: dict[str, list[str]] = {}
 
-# --- Pending messages per session (if client not connected yet) ---
-_pending: dict[str, list] = {}
-
-# --- Rate limiting ---
+# Rate limiting for /notify
 _notify_last: dict[str, float] = {}
 NOTIFY_COOLDOWN = 10
 
 
 async def _telegram_poll():
-    """Async background task: polls Telegram and emits replies via WebSocket."""
+    """Background task: polls Telegram getUpdates and pushes replies via WebSocket."""
     offset = None
     print('[POLL] Telegram polling started')
     async with httpx.AsyncClient() as client:
         while True:
             try:
-                params = {'timeout': 30}
+                params = {'timeout': 0, 'allowed_updates': ['message']}
                 if offset:
                     params['offset'] = offset
+
                 resp = await client.get(
                     f'https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/getUpdates',
-                    params=params, timeout=35
+                    params=params, timeout=10
                 )
-                for update in resp.json().get('result', []):
-                    offset = update['update_id'] + 1
+                updates = resp.json().get('result', [])
+
+                if updates:
+                    offset = updates[-1]['update_id'] + 1
+
+                for update in updates:
                     msg       = update.get('message', {})
                     text      = msg.get('text', '')
                     thread_id = msg.get('message_thread_id')
-                    print(f'[TG UPDATE] text={text!r} thread_id={thread_id}')
 
-                    if thread_id:
-                        for sid, sess in _sessions.items():
-                            if sess.get('thread_id') == thread_id:
-                                print(f'[TG REPLY] -> room={sid} msg={text!r}')
-                                await sio.emit('bot_reply', {'message': text}, room=sid)
-                                await asyncio.sleep(0.05)
-                                break
+                    if not text or not thread_id:
+                        continue
 
-            except httpx.ReadTimeout:
-                pass  # normal — Telegram returned empty after 30s
+                    session_id = _thread_to_session.get(thread_id)
+                    if not session_id:
+                        continue
+
+                    if session_id in _socket_sids:
+                        await sio.emit('bot_reply', {'message': text}, room=session_id)
+                    else:
+                        _pending.setdefault(session_id, []).append(text)
+                        print(f'[PENDING] queued for offline session={session_id}')
+
+                if not updates:
+                    await asyncio.sleep(1)
+
             except Exception as e:
-                print(f'[Telegram Poll Error] {e}')
+                print(f'[POLL ERROR] {e}')
                 await asyncio.sleep(5)
 
 
 @sio.event
 async def join(sid, data):
-    session_id = data['session_id']
+    session_id = data.get('session_id', '')
     await sio.enter_room(sid, session_id)
     _socket_sids[session_id] = sid
-    print(f'[JOIN] session={session_id} socket_sid={sid}')
+    print(f'[JOIN] session={session_id}')
+
+    for msg in _pending.pop(session_id, []):
+        await sio.emit('bot_reply', {'message': msg}, to=sid)
+
 
 @sio.event
 async def disconnect(sid):
@@ -85,44 +100,27 @@ async def disconnect(sid):
             print(f'[DISCONNECT] session={session_id}')
             break
 
-@sio.event
-async def disconnect(sid):
-    # Remove stale socket_sid so we don't emit to dead connections
-    for session_id, stored_sid in list(_socket_sids.items()):
-        if stored_sid == sid:
-            del _socket_sids[session_id]
-            print(f'[DISCONNECT] session={session_id} socket_sid={sid} removed')
-            break
 
-
-# Wrap ASGIApp to start Telegram polling on first request
 class AppWithStartup:
     def __init__(self):
         self.inner = socketio.ASGIApp(sio, WSGIMiddleware(flask_app))
-        self._started = False
 
     async def __call__(self, scope, receive, send):
         if scope['type'] == 'lifespan':
             await self._handle_lifespan(scope, receive, send)
             return
-        if not self._started:
-            self._started = True
-            loop = asyncio.get_event_loop()
-            loop.create_task(_telegram_poll())
-            print('[APP] Telegram poll task created')
         await self.inner(scope, receive, send)
 
     async def _handle_lifespan(self, scope, receive, send):
         while True:
             event = await receive()
             if event['type'] == 'lifespan.startup':
-                loop = asyncio.get_event_loop()
-                loop.create_task(_telegram_poll())
-                print('[APP] Telegram poll task created via lifespan')
+                asyncio.get_running_loop().create_task(_telegram_poll())
                 await send({'type': 'lifespan.startup.complete'})
             elif event['type'] == 'lifespan.shutdown':
                 await send({'type': 'lifespan.shutdown.complete'})
                 return
+
 
 app = AppWithStartup()
 
@@ -179,29 +177,28 @@ CONVO_TREE = {
     },
     "contact": {
         "bot": "You can reach me at kris123kris99@gmail.com or connect on LinkedIn. I usually respond within 24 hours.",
-        "options": [{"text": "🏠 Back to Start", "next": "start"}]
+        "options": [{"text": "�� Back to Start", "next": "start"}]
     },
 }
 
 
 @flask_app.route('/')
 def index():
-    experience_data = [
+    experiences = [
         {"title": "Programmer",               "company": "Tech Company", "year": "2022 - Present", "desc": "Led a team of 5 to develop a Flask-based analytics dashboard."},
         {"title": "Junior Frontend Developer", "company": "TUMO",         "year": "2020 - 2022",    "desc": "Developed 20+ responsive landing pages using modern CSS."},
     ]
     skills = ["Python", "Flask", "JavaScript", "React", "PostgreSQL", "Docker", "Git"]
     projects = [
         {"title": "Online chat application", "desc": "A web-based chat application built with Flask and SQLite, featuring real-time messaging via WebSockets, user authentication, and message encryption.", "tags": ["Python", "Flask", "SQLite", "WebSockets"], "url": "https://github.com/Kristin0/ChatRaspberry"},
-        {"title": "Interactive CV Chatbot",  "desc": "This interactive CV chatbot — built with Flask and vanilla JS — that notifies the owner via email when a visitor opens a chat.", "tags": ["Python", "Flask", "JavaScript", "SMTP"], "url": "https://github.com/Kristin0/interactivecv"},
+        {"title": "Interactive CV Chatbot",  "desc": "This interactive CV chatbot — built with Flask and vanilla JS — that notifies the owner via email when a visitor opens a chat.",                        "tags": ["Python", "Flask", "JavaScript", "SMTP"],       "url": "https://github.com/Kristin0/interactivecv"},
     ]
-    return render_template('index.html', experiences=experience_data, skills=skills, projects=projects)
+    return render_template('index.html', experiences=experiences, skills=skills, projects=projects)
 
 
 @flask_app.route('/chat', methods=['POST'])
 def chat():
-    data = request.json
-    next_step = data.get('next', 'start')
+    next_step = request.json.get('next', 'start')
     return jsonify(CONVO_TREE.get(next_step, CONVO_TREE['start']))
 
 
@@ -215,8 +212,7 @@ def _get_country(ip: str) -> str:
     if ip in ('127.0.0.1', 'localhost'):
         return '🏠 localhost'
     try:
-        import requests as req
-        r = req.get(f'http://ip-api.com/json/{ip}?fields=country,countryCode', timeout=3)
+        r = requests.get(f'http://ip-api.com/json/{ip}?fields=country,countryCode', timeout=3)
         data = r.json()
         if data.get('country'):
             return f'{data["country"]} ({data["countryCode"]})'
@@ -226,12 +222,10 @@ def _get_country(ip: str) -> str:
 
 
 def _tg_send(text: str, thread_id: int = None) -> None:
-    import requests as req
     payload = {'chat_id': TELEGRAM_CHAT_ID, 'text': text}
     if thread_id:
         payload['message_thread_id'] = thread_id
-    r = req.post(f'https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage', json=payload, timeout=5)
-    print(f'[TG SEND] status={r.status_code}')
+    requests.post(f'https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage', json=payload, timeout=5)
 
 
 @flask_app.route('/notify', methods=['POST'])
@@ -252,8 +246,7 @@ def notify():
     thread_id = None
     if USE_TOPICS:
         try:
-            import requests as req
-            r = req.post(
+            r = requests.post(
                 f'https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/createForumTopic',
                 json={'chat_id': TELEGRAM_CHAT_ID, 'name': f'Visitor {username}'[:128]}, timeout=5
             )
@@ -261,10 +254,12 @@ def notify():
             if result.get('ok'):
                 thread_id = result['result']['message_thread_id']
         except Exception as e:
-            print(f'[TOPIC] error: {e}')
+            print(f'[TOPIC ERROR] {e}')
 
     country = _get_country(ip)
     _sessions[session_id] = {'username': username, 'ip': ip, 'thread_id': thread_id}
+    if thread_id:
+        _thread_to_session[thread_id] = session_id
 
     text = (
         f'💬 New chat visitor!\n\n'
@@ -273,13 +268,13 @@ def notify():
         f'🗺️ Country: {country}\n'
         f'✉️ Message: {message}\n'
         f'🕐 Time: {visited_at}\n\n'
-        f'Just reply in this topic to respond.'
+        f'Reply in this topic to respond.'
     )
     try:
         _tg_send(text, thread_id=thread_id)
         return jsonify({'status': 'ok', 'session_id': session_id})
     except Exception as e:
-        print(f'[Telegram Error] {e}')
+        print(f'[NOTIFY ERROR] {e}')
         return jsonify({'status': 'error', 'detail': str(e)}), 500
 
 
@@ -291,9 +286,8 @@ def send_message():
     session    = _sessions.get(session_id)
     if not session or not message:
         return jsonify({'status': 'ignored'}), 200
-    text = f'💬 [{session["username"]}]: {message}\n'
     try:
-        _tg_send(text, thread_id=session.get('thread_id'))
+        _tg_send(f'💬 [{session["username"]}]: {message}', thread_id=session.get('thread_id'))
         return jsonify({'status': 'ok'})
     except Exception as e:
         return jsonify({'status': 'error', 'detail': str(e)}), 500

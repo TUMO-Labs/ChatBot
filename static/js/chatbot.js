@@ -21,7 +21,7 @@ const socket = io({ transports: ['polling', 'websocket'], upgrade: true });
 
 // When owner replies via Telegram → show in chat instantly
 socket.on('bot_reply', data => {
-    console.log('[bot_reply]', data.seq, data.message);
+    console.log(`[bot_reply] seq=${data.seq} msg=${data.message}`);
     appendBotMessage(data.message);
 });
 
