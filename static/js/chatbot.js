@@ -56,15 +56,6 @@ socket.on('connect', () => {
     if (sessionId) socket.emit('join', { session_id: sessionId });
 });
 
-// Server tells us if it recognises this session (e.g. after server restart)
-socket.on('session_status', ({ known }) => {
-    if (!known && notificationSent) {
-        // Server lost state — clear everything and ask for name again
-        sessionStorage.clear();
-        location.reload();
-    }
-});
-
 
 chatToggle.onclick = () => {
     chatWidget.classList.toggle('active');
